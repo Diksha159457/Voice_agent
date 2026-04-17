@@ -1,7 +1,7 @@
 # 🎙️ Voice Agent
 
-A lightweight, Claude-style voice assistant that runs in your browser.  
-Type a command **or** upload an audio file — the agent transcribes it, classifies your intent, and takes action.
+A lightweight, browser-based voice assistant with a Claude-style UI.
+You can type a prompt, record from your microphone, upload an audio clip, or attach a text/document file for analysis.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![Flask](https://img.shields.io/badge/Flask-3.0-black?logo=flask)
@@ -19,7 +19,9 @@ Type a command **or** upload an audio file — the agent transcribes it, classif
 | 🧠 Intent detection | Groq LLaMA3-8B — classifies commands in < 1 second |
 | 🛠️ Actions | Create files/folders, generate code, summarize text, answer questions |
 | 💬 Claude-style UI | Dark theme, message bubbles, sidebar history, suggestion chips |
+| 🎙️ Mic recording | Record directly in the browser with replay before sending |
 | 🎵 Audio upload | Supports `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.webm` |
+| 📄 File upload | Supports text/code files plus `.pdf` and `.docx` |
 | ⚡ Lightweight | ~300 MB total vs 6 GB+ for the PyTorch + Ollama stack |
 
 ---
@@ -35,6 +37,9 @@ voice_agent/
 └── utils/
     ├── stt.py           ← Audio → text  (faster-whisper)
     ├── intent.py        ← Text → intent dict  (Groq LLaMA3)
+    ├── client.py        ← Shared Groq client helper
+    ├── chat.py          ← Conversational reply + streaming chat
+    ├── voice.py         ← Local mic/speech helper functions
     ├── tools.py         ← Intent → action  (create file, write code, etc.)
     └── memory.py        ← In-session conversation history
 ```
@@ -120,6 +125,8 @@ python app.py
 
 Open **http://localhost:8501** in your browser.
 
+Note: the app now starts quietly. `python app.py` may show no banner text, which is expected.
+
 ---
 
 ## 🎯 How to Use
@@ -136,12 +143,28 @@ Click the input box at the bottom and type naturally:
 
 Press **Enter** to send (or **Shift + Enter** for a newline).
 
+### Record audio
+1. Click **Record audio**
+2. Allow microphone access in your browser
+3. Click the button again to stop recording
+4. Use the built-in audio player to listen back
+5. Press **Send** to transcribe and process the recording
+
 ### Upload audio
-1. Click **Upload audio** (microphone icon)
+1. Click **Upload audio**
 2. Pick any audio file (`.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.webm`)
 3. Press **Send** — the app transcribes it and runs the command
 
 The status bar shows **"Heard: …"** so you can verify what Whisper transcribed.
+
+### Upload a file
+1. Click **Upload file**
+2. Choose a supported file:
+   `.txt`, `.md`, `.py`, `.js`, `.ts`, `.tsx`, `.json`, `.csv`, `.html`, `.css`, `.java`, `.c`, `.cpp`, `.sql`, `.xml`, `.yaml`, `.yml`, `.pdf`, `.docx`
+3. Optionally add a typed note in the text box
+4. Press **Send**
+
+Large files are trimmed before being sent to the LLM so the request stays within model limits.
 
 ### Sidebar
 - The **Recent** panel on the left shows your conversation history
@@ -178,6 +201,16 @@ Using a `.env` file is the easiest fix — the app loads it automatically.
 - Make sure **ffmpeg is installed** (`ffmpeg -version` in your terminal should print a version)
 - The audio file must be a supported format: `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.webm`
 - File size limit is 50 MB
+
+### PDF / DOCX upload issues
+- PDF extraction works best for text-based PDFs; scanned-image PDFs may need OCR
+- DOCX extraction reads document text, but highly custom layouts may lose some formatting
+- Very large files are intentionally truncated before they are sent to the model
+
+### App seems to “hang” after `python app.py`
+- The startup banner was intentionally removed, so no console output is expected
+- Open **http://localhost:8501** manually in your browser
+- If needed, confirm the server is listening with `lsof -i :8501`
 
 ### Port already in use
 ```bash

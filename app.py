@@ -1175,4 +1175,5 @@ if __name__ == "__main__":
         pass
 
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    print("Server running at http://localhost:8501")
     app.run(debug=False, port=8501)
