@@ -3,30 +3,13 @@
 # All generated files go into output/ — the agent can never write outside it.
 
 import os       # path operations and directory creation
-from groq import Groq   # cloud LLM for code gen and chat replies
+
+from config import MODEL_NAME
+from utils.client import _get_client
 
 OUTPUT_DIR = "output"
 # All files the agent creates go here.
 # One safe folder = easy cleanup, no risk of overwriting system files.
-
-# ── Lazy client (same pattern as intent.py) ───────────────────────────────────
-_client = None
-
-def _get_client() -> Groq:
-    """Return the shared Groq client; create it on the first call."""
-    global _client
-    if _client is None:
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "\n\n  GROQ_API_KEY is not set!\n"
-                "  Get a free key at https://console.groq.com then run:\n\n"
-                "    export GROQ_API_KEY=gsk_...   # Mac / Linux\n"
-                "    set    GROQ_API_KEY=gsk_...   # Windows CMD\n"
-            )
-        _client = Groq(api_key=api_key)
-    return _client
-
 
 # ── Helper: create output/ if it doesn't exist ───────────────────────────────
 def _ensure_output_dir() -> None:
@@ -81,7 +64,7 @@ def write_code(intent_data: dict) -> str:
     )
 
     response = _get_client().chat.completions.create(
-        model="llama3-8b-8192",
+        model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,   # low but not zero: allows natural code style variation
         max_tokens=1000,   # enough for a reasonably-sized source file
@@ -108,7 +91,7 @@ def summarize(intent_data: dict) -> str:
     prompt = f"Summarize the following in 2-4 concise sentences:\n\n{details}"
 
     response = _get_client().chat.completions.create(
-        model="llama3-8b-8192",
+        model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,   # slight warmth for readable prose
         max_tokens=300,
@@ -126,7 +109,7 @@ def general_chat(intent_data: dict) -> str:
     question = details or target or "Hello"   # reconstruct the original question
 
     response = _get_client().chat.completions.create(
-        model="llama3-8b-8192",
+        model=MODEL_NAME,
         messages=[
             {
                 "role": "system",
@@ -140,7 +123,34 @@ def general_chat(intent_data: dict) -> str:
 
     return response.choices[0].message.content.strip()
 
+def streaming_chat(text):
+    """
+    Streaming version of general chat (prints live in terminal)
+    """
 
+    client = _get_client()  # get Groq client
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,  # use updated model
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": text}
+        ],
+        stream=True  # 🔥 enables streaming
+    )
+
+    full_response = ""  # store final response
+
+    for chunk in response:
+        delta = chunk.choices[0].delta.content or ""  # extract token
+
+        print(delta, end="", flush=True)  # print live in terminal
+
+        full_response += delta  # build full response
+
+    print()  # newline after completion
+
+    return full_response.strip()  # return complete response
 # ── Dispatch table: intent string → tool function ─────────────────────────────
 TOOL_MAP = {
     "create_file":  create_file,    # "make a folder …" / "create a file …"
@@ -156,7 +166,8 @@ def execute_tool(intent_data: dict) -> str:
     Falls back to general_chat for any unrecognised intent.
     """
     intent  = intent_data.get("intent", "general_chat")
-    tool_fn = TOOL_MAP.get(intent, general_chat)   # safe fallback
+    DEFAULT_TOOL = general_chat
+    tool_fn = TOOL_MAP.get(intent, DEFAULT_TOOL)  # safe fallback
 
     try:
         return tool_fn(intent_data)

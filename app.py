@@ -4,18 +4,25 @@
 
 # ── Standard library imports ──────────────────────────────────────────────────
 import os          # file deletion, path ops, env vars
+import logging     # lets us quiet Flask/Werkzeug startup logging
+import sys         # lets us add bundled dependency paths when local venv is missing packages
 import tempfile    # creates safe temporary files for audio uploads
+import zipfile     # DOCX files are ZIP containers under the hood
+import xml.etree.ElementTree as ET  # parse DOCX XML content without extra dependencies
+from pathlib import Path  # safe filename/extension handling for uploaded files
 
 # ── Third-party imports ───────────────────────────────────────────────────────
 from flask import Flask, request, jsonify, render_template_string
 # Flask               → creates the web application object
 # request             → reads incoming HTTP data (files, JSON, form fields)
 # jsonify             → converts Python dicts → JSON HTTP responses
-# render_template_string → renders an HTML string as a full page response
+#render_template_string → renders an HTML string as a full page response
 
 # ── Our modules (all in utils/) ───────────────────────────────────────────────
 from utils.stt    import transcribe_audio  # audio file → text string
 from utils.intent import detect_intent    # text → intent dict {"intent","target","details"}
+from utils.chat import general_chat, streaming_chat    # text → conversational reply string
+from utils.voice import record_audio, speech_to_text, speak
 from utils.tools  import execute_tool     # intent dict → action → result string
 from utils.memory import (
     add_to_memory,   # save one interaction to session history
@@ -28,6 +35,10 @@ app = Flask(__name__)
 # Flask(__name__) creates the WSGI application.
 # __name__ tells Flask where to find templates/static assets
 # (same directory as this file).
+
+MAX_FILE_CHARS = 12000
+# Large uploaded documents can exceed the Groq model TPM/context budget.
+# We keep only the first slice of text so the request stays responsive.
 
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 # Allow uploads up to 50 MB.
@@ -43,6 +54,22 @@ try:
     load_dotenv()                    # looks for .env in the current working directory
 except ImportError:
     pass  # fine — just use: export GROQ_API_KEY=gsk_...
+
+# ── Optional bundled document/PDF parsers ─────────────────────────────────────
+# The project venv may not include pypdf/python-docx, but the desktop runtime
+# does. Adding that path lets the app support PDF/DOCX uploads without forcing
+# you to install extra packages into the project first.
+bundle_python = os.environ.get(
+    "CODEX_BUNDLED_PYTHON_SITE",
+    "/Users/dikshashahi/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages",
+)
+if os.path.isdir(bundle_python) and bundle_python not in sys.path:
+    sys.path.append(bundle_python)
+
+try:
+    from pypdf import PdfReader  # PDF text extraction
+except ImportError:
+    PdfReader = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,10 +262,21 @@ HTML = """
     }
     .upload-btn:hover { background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.2); color: var(--text-primary); }
     .upload-btn.has-file { border-color: var(--accent); color: var(--accent); background: rgba(212,165,116,.08); }
+    .record-btn.recording {
+      background: rgba(248,113,113,.14);
+      border-color: rgba(248,113,113,.45);
+      color: #fecaca;
+    }
 
     .file-name {
       font-size: 12px; color: var(--accent);
       max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .audio-preview {
+      margin-top: 10px;
+      width: 100%;
+      display: none;
+      filter: sepia(.15) saturate(.85);
     }
 
     /* Send button */
@@ -316,7 +354,7 @@ HTML = """
         <div class="welcome-state" id="welcomeState">
           <div class="welcome-icon">🎙</div>
           <h1 class="welcome-title">How can I help you?</h1>
-          <p class="welcome-sub">Type a command or upload an audio file. I can create files, write code, summarize text, and answer questions.</p>
+          <p class="welcome-sub">Type a command, record from your mic, upload audio, or attach a text/code file. I can create files, write code, summarize text, and answer questions.</p>
           <div class="suggestions">
             <div class="suggestion-chip" onclick="fillInput('Create a Python file called calculator.py with add and subtract functions')">
               <span class="chip-icon">📄</span>Create a calculator.py file
@@ -362,7 +400,26 @@ HTML = """
                 onchange="onFileSelected(this)"
               />
 
-              <!-- Visible styled button — clicking opens the file picker via for="audioFile" -->
+              <!-- Hidden general file picker for text/code attachments -->
+              <input
+                type="file" id="attachmentFile"
+                accept=".txt,.md,.py,.js,.ts,.tsx,.json,.csv,.html,.css,.java,.c,.cpp,.sql,.xml,.yaml,.yml,.pdf,.docx"
+                style="display:none"
+                onchange="onAttachmentSelected(this)"
+              />
+
+              <!-- Real browser microphone recorder -->
+              <button type="button" class="upload-btn record-btn" id="recordBtn" onclick="toggleRecording()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="23"/>
+                  <line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+                <span id="recordLabelText">Record audio</span>
+              </button>
+
+              <!-- Visible styled button — clicking opens the audio file picker -->
               <label for="audioFile" class="upload-btn" id="uploadLabel">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                   <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
@@ -373,8 +430,21 @@ HTML = """
                 <span id="uploadLabelText">Upload audio</span>
               </label>
 
-              <!-- Filename shown after picking; hidden by default -->
-              <span class="file-name" id="fileName" style="display:none"></span>
+              <!-- Visible styled button — clicking opens the general file picker -->
+              <label for="attachmentFile" class="upload-btn" id="attachmentLabel">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                  <path d="M14 3h7v7"/>
+                  <path d="M10 14L21 3"/>
+                </svg>
+                <span id="attachmentLabelText">Upload file</span>
+              </label>
+
+              <!-- Audio filename shown after recording/uploading -->
+              <span class="file-name" id="audioName" style="display:none"></span>
+
+              <!-- Generic attachment filename shown after picking -->
+              <span class="file-name" id="attachmentName" style="display:none"></span>
 
             </div>
 
@@ -385,6 +455,7 @@ HTML = """
             </button>
           </div>
         </div>
+        <audio class="audio-preview" id="audioPreview" controls></audio>
         <div class="status-bar" id="statusBar"></div>
       </div>
     </div>
@@ -400,14 +471,24 @@ HTML = """
 const textInput   = document.getElementById('textInput');    // the textarea
 const sendBtn     = document.getElementById('sendBtn');      // circular send button
 const audioFile   = document.getElementById('audioFile');    // hidden <input type=file>
+const attachmentFile = document.getElementById('attachmentFile'); // hidden file picker for text/code files
 const uploadLabel = document.getElementById('uploadLabel');  // styled label for file input
-const fileName    = document.getElementById('fileName');     // filename chip
+const attachmentLabel = document.getElementById('attachmentLabel'); // styled label for generic files
+const audioName   = document.getElementById('audioName');    // audio filename chip
+const attachmentName = document.getElementById('attachmentName'); // generic filename chip
+const recordBtn   = document.getElementById('recordBtn');    // browser microphone button
+const audioPreview = document.getElementById('audioPreview'); // lets the user replay selected/recorded audio
 const statusBar   = document.getElementById('statusBar');    // "Transcribing…" text
 const msgList     = document.getElementById('messagesList'); // chat bubble container
 const histList    = document.getElementById('historyList');  // sidebar list
 const welcomeEl   = document.getElementById('welcomeState'); // empty state block
 
 let busy = false;   // prevents double-submits while a request is in flight
+let mediaRecorder = null;         // active browser recorder instance
+let recordedChunks = [];          // chunks collected while recording
+let recordedBlob = null;          // final recorded audio blob
+let recordingStream = null;       // microphone stream so we can stop tracks cleanly
+let audioPreviewUrl = null;       // object URL for the audio player
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TEXTAREA — auto-resize as user types
@@ -423,8 +504,9 @@ function autoResize(el) {
 // ─────────────────────────────────────────────────────────────────────────────
 function refreshSendBtn() {
   const hasText = textInput.value.trim().length > 0;
-  const hasFile = audioFile.files.length > 0;
-  sendBtn.disabled = busy || (!hasText && !hasFile);
+  const hasAudio = audioFile.files.length > 0 || recordedBlob !== null;
+  const hasAttachment = attachmentFile.files.length > 0;
+  sendBtn.disabled = busy || (!hasText && !hasAudio && !hasAttachment);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -432,17 +514,119 @@ function refreshSendBtn() {
 // ─────────────────────────────────────────────────────────────────────────────
 function onFileSelected(input) {
   if (input.files.length === 0) return;   // user cancelled the picker — nothing to do
-  const name = input.files[0].name;       // e.g. "voice_note.m4a"
+  const selectedFile = input.files[0];    // the actual audio File object
+  const name = selectedFile.name;         // e.g. "voice_note.m4a"
+
+  // If the user picked an audio file manually, discard any previous in-browser recording.
+  recordedBlob = null;
+  setRecordVisualState(false, 'Record audio');
 
   // Update the upload label to show a success state
   uploadLabel.classList.add('has-file');
-  document.getElementById('uploadLabelText').textContent = '🎵';
+  document.getElementById('uploadLabelText').textContent = 'Audio ready';
 
   // Show the filename next to the button
-  fileName.textContent = name;
-  fileName.style.display = 'inline';
+  audioName.textContent = name;
+  audioName.style.display = 'inline';
+  setAudioPreview(selectedFile);          // let the user listen back before sending
 
   refreshSendBtn();   // file present → enable send
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GENERIC FILE SELECTION — called by onchange on the hidden attachment picker
+// ─────────────────────────────────────────────────────────────────────────────
+function onAttachmentSelected(input) {
+  if (input.files.length === 0) return;   // user cancelled the picker — nothing to do
+
+  attachmentLabel.classList.add('has-file');
+  document.getElementById('attachmentLabelText').textContent = 'File ready';
+  attachmentName.textContent = input.files[0].name;
+  attachmentName.style.display = 'inline';
+  refreshSendBtn();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BROWSER RECORDING — click once to start, click again to stop
+// ─────────────────────────────────────────────────────────────────────────────
+async function toggleRecording() {
+  if (busy) return;  // don't allow recording while a request is already running
+
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();        // stop the recorder; onstop will build the final blob
+    setStatus('Finishing recording…');
+    return;
+  }
+
+  try {
+    // Ask the browser for microphone access.
+    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // Use the browser's preferred audio container/codec.
+    mediaRecorder = new MediaRecorder(recordingStream);
+    recordedChunks = [];
+
+    // Each dataavailable event gives us one piece of the captured audio.
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        recordedChunks.push(event.data);
+      }
+    };
+
+    // When recording stops, merge chunks into a Blob the upload route can accept.
+    mediaRecorder.onstop = () => {
+      recordedBlob = new Blob(recordedChunks, {
+        type: mediaRecorder.mimeType || 'audio/webm',
+      });
+
+      // Stop the physical microphone so the browser releases it immediately.
+      if (recordingStream) {
+        recordingStream.getTracks().forEach(track => track.stop());
+        recordingStream = null;
+      }
+
+      uploadLabel.classList.add('has-file');
+      document.getElementById('uploadLabelText').textContent = 'Recorded audio';
+      audioName.textContent = 'recording.webm';
+      audioName.style.display = 'inline';
+      setAudioPreview(recordedBlob);      // expose playback controls for the newly captured mic audio
+      setRecordVisualState(false, 'Re-record');
+      setStatus('Recorded audio is ready to send.');
+      refreshSendBtn();
+    };
+
+    mediaRecorder.start();
+    recordedBlob = null;  // clear any older recording because a new one has started
+    audioFile.value = ''; // clear the file picker so only one audio source is active
+    audioName.textContent = '';
+    audioName.style.display = 'none';
+    uploadLabel.classList.remove('has-file');
+    document.getElementById('uploadLabelText').textContent = 'Upload audio';
+    setRecordVisualState(true, 'Stop recording');
+    setStatus('Recording from microphone… click again to stop.');
+    refreshSendBtn();
+  } catch (err) {
+    setRecordVisualState(false, 'Record audio');
+    setStatus('Microphone access failed: ' + err.message);
+  }
+}
+
+// Keep the record button visuals in one place so the UI state stays consistent.
+function setRecordVisualState(isRecording, label) {
+  recordBtn.classList.toggle('recording', isRecording);
+  document.getElementById('recordLabelText').textContent = label;
+}
+
+// Load the chosen audio into the native player so the user can review it.
+function setAudioPreview(source) {
+  if (audioPreviewUrl) {
+    URL.revokeObjectURL(audioPreviewUrl);
+    audioPreviewUrl = null;
+  }
+  audioPreviewUrl = URL.createObjectURL(source);
+  audioPreview.src = audioPreviewUrl;
+  audioPreview.style.display = 'block';
+  audioPreview.load();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -470,14 +654,18 @@ function fillInput(text) {
 async function handleSend() {
   if (busy) return;                              // guard: ignore if already processing
 
-  const text = textInput.value.trim();
-  const file = audioFile.files[0] || null;      // null if no file selected
+  const text = textInput.value.trim();                     // free-form typed prompt
+  const audio = audioFile.files[0] || null;               // manually selected audio file
+  const attachment = attachmentFile.files[0] || null;     // generic text/code attachment
 
-  if (!text && !file) return;                    // nothing to send (shouldn't happen)
+  if (!text && !audio && !attachment && !recordedBlob) return;  // nothing to send
 
   // Capture both values NOW before clearInputs() wipes the DOM state
-  if (file) {
-    await sendAudio(file, text);   // audio takes priority when both present
+  if (attachment) {
+    await sendAttachment(attachment, text);   // generic file attachments take priority
+  } else if (audio || recordedBlob) {
+    const audioToSend = audio || new File([recordedBlob], 'recording.webm', { type: recordedBlob.type || 'audio/webm' });
+    await sendAudio(audioToSend, text);       // real mic recording and uploaded audio share one backend route
   } else {
     await sendText(text);
   }
@@ -510,6 +698,32 @@ async function sendAudio(file, extraText) {
   } finally {
     setBusy(false);
     clearInputs();    // clear AFTER fetch so file reference isn't lost mid-request
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEND FILE — POST text/code attachment to /run_file
+// ─────────────────────────────────────────────────────────────────────────────
+async function sendAttachment(file, extraText) {
+  appendMessage('user', extraText || '📎 ' + file.name);
+  showTyping();
+  setStatus('Reading file…');
+  setBusy(true);
+
+  const form = new FormData();
+  form.append('file', file, file.name);
+  if (extraText) form.append('note', extraText);
+
+  try {
+    const res = await fetch('/run_file', { method: 'POST', body: form });
+    const data = await res.json();
+    handleResponse(data);
+  } catch (err) {
+    removeTyping();
+    appendMessage('agent', '⚠️ Network error: ' + err.message);
+  } finally {
+    setBusy(false);
+    clearInputs();
   }
 }
 
@@ -660,10 +874,24 @@ function clearInputs() {
   textInput.value = '';
   textInput.style.height = 'auto';
   audioFile.value = '';                       // clear the file picker
-  fileName.style.display   = 'none';
-  fileName.textContent     = '';
+  attachmentFile.value = '';                  // clear the generic file picker
+  recordedBlob = null;                        // drop any in-browser recording after send/clear
+  audioName.style.display   = 'none';
+  audioName.textContent     = '';
+  attachmentName.style.display = 'none';
+  attachmentName.textContent = '';
+  if (audioPreviewUrl) {
+    URL.revokeObjectURL(audioPreviewUrl);
+    audioPreviewUrl = null;
+  }
+  audioPreview.pause();
+  audioPreview.removeAttribute('src');
+  audioPreview.style.display = 'none';
   uploadLabel.classList.remove('has-file');
+  attachmentLabel.classList.remove('has-file');
   document.getElementById('uploadLabelText').textContent = 'Upload audio';
+  document.getElementById('attachmentLabelText').textContent = 'Upload file';
+  setRecordVisualState(false, 'Record audio');
   refreshSendBtn();
 }
 
@@ -710,6 +938,8 @@ def run_audio():
     if not audio:
         return jsonify({"error": "No audio file received. Make sure the field name is 'audio'."}), 400
 
+    note = request.form.get("note", "").strip()  # optional typed context from the textarea
+
     # ── Preserve original extension ───────────────────────────────────────────
     # faster-whisper delegates decoding to ffmpeg.
     # ffmpeg infers codec from the file extension, NOT the Content-Type header.
@@ -743,9 +973,102 @@ def run_audio():
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+    if not transcript.strip():
+        return jsonify({
+            "error": "No speech detected. Try speaking louder or closer to mic."
+        }), 400
+
+    # If the user typed extra context, keep it with the transcript instead of dropping it.
+    request_text = transcript if not note else f"{note}\n\nSpoken request:\n{transcript}"
+
     # ── Process transcript the same way as typed text ─────────────────────────
-    result = _process_text(transcript)
+    result = _process_text(request_text)
     result["transcript"] = transcript   # return what Whisper heard for UI display
+    return jsonify(result)
+
+
+@app.route("/run_file", methods=["POST"])
+def run_file():
+    """
+    Receive a text/code file upload, read its contents, and pass both the
+    optional note and the file text into the normal text pipeline.
+    """
+    uploaded = request.files.get("file")  # field name used by sendAttachment()
+    if not uploaded:
+        return jsonify({"error": "No file received. Choose a file and try again."}), 400
+
+    # Keep the original filename only for display/context; we never trust it for paths.
+    filename = Path(uploaded.filename or "uploaded_file.txt").name
+    suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    note = request.form.get("note", "").strip()
+
+    # Read the raw file bytes from memory so we can decode them safely ourselves.
+    raw_bytes = uploaded.read()
+    if not raw_bytes:
+        return jsonify({"error": "The selected file is empty."}), 400
+
+    try:
+        # Pick a parser based on extension so PDF/DOCX uploads become plain text too.
+        if suffix == "pdf":
+            if PdfReader is None:
+                return jsonify({"error": "PDF support is not available in this environment yet."}), 500
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(raw_bytes)
+                pdf_path = tmp.name
+            try:
+                reader = PdfReader(pdf_path)
+                contents = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+            finally:
+                if os.path.exists(pdf_path):
+                    os.unlink(pdf_path)
+        elif suffix == "docx":
+            # DOCX is a ZIP file; reading the XML directly avoids python-docx/lxml runtime issues.
+            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+                tmp.write(raw_bytes)
+                docx_path = tmp.name
+            try:
+                with zipfile.ZipFile(docx_path) as docx_zip:
+                    xml_bytes = docx_zip.read("word/document.xml")
+                root = ET.fromstring(xml_bytes)
+                namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                paragraphs = []
+                for paragraph in root.findall(".//w:p", namespace):
+                    text_runs = [node.text or "" for node in paragraph.findall(".//w:t", namespace)]
+                    joined = "".join(text_runs).strip()
+                    if joined:
+                        paragraphs.append(joined)
+                contents = "\n".join(paragraphs).strip()
+            finally:
+                if os.path.exists(docx_path):
+                    os.unlink(docx_path)
+        else:
+            # UTF-8 with replacement keeps the endpoint resilient across common text files.
+            contents = raw_bytes.decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        return jsonify({"error": f"Could not read the uploaded file: {e}"}), 400
+
+    if not contents:
+        return jsonify({"error": "The uploaded file did not contain readable text."}), 400
+
+    was_truncated = len(contents) > MAX_FILE_CHARS
+    trimmed_contents = contents[:MAX_FILE_CHARS].strip()
+
+    if was_truncated:
+        trimmed_contents += (
+            "\n\n[File truncated before sending to the model because the upload was too large. "
+            "Only the beginning of the document is included here.]"
+        )
+
+    # Build one clear prompt so the rest of the app can treat file uploads like normal text.
+    request_text = (
+        f"{note}\n\nAttached file: {filename}\n\n{trimmed_contents}"
+        if note else
+        f"Attached file: {filename}\n\n{trimmed_contents}"
+    )
+
+    result = _process_text(request_text)
+    result["uploaded_file"] = filename
+    result["file_truncated"] = was_truncated
     return jsonify(result)
 
 
@@ -773,28 +1096,67 @@ def clear_history_route():
     clear_memory()
     return jsonify({"status": "cleared"})
 
+@app.route("/run_voice", methods=["GET"])
+def run_voice():
+    """
+    Voice input → LLM → Voice output
+    """
 
+    # Step 1: Record audio
+    audio_file = record_audio()
+
+    # Step 2: Convert speech to text
+    text = speech_to_text(audio_file)
+
+    # Step 3: Process using your existing system
+    result = _process_text(text)
+
+    response_text = result.get("result", "")
+
+    # Step 4: Speak response
+    speak(response_text)
+
+    return jsonify({
+        "input_text": text,
+        "response": response_text
+    })
 # ─────────────────────────────────────────────────────────────────────────────
 # SHARED TEXT PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _process_text(text: str) -> dict:
     """
-    Core pipeline used by both /run_audio and /run_text.
-    text  →  detect_intent()  →  execute_tool()  →  add_to_memory()  →  dict
-
-    Returns dict with keys 'intent' and 'result'.
+    Main brain: text → intent → tool/chat → memory → response
     """
-    intent_data = detect_intent(text)        # ask LLM: what does the user want?
-    result_text = execute_tool(intent_data)  # perform the action
-    add_to_memory({                          # save to session history
-        "text":   text,
-        "intent": intent_data.get("intent", ""),
-        "result": result_text,
+
+    print("USER INPUT:", text)  # Debug log
+
+    # Step 1: Detect intent
+    intent_data = detect_intent(text)
+
+    print("INTENT:", intent_data)  # Debug log
+
+    intent = intent_data.get("intent", "general_chat")
+
+    # Step 2: Execute tool OR chat
+    if intent == "general_chat":
+        # Use streaming for chat
+        result_text = streaming_chat(text)
+    else:
+        # Use tool execution pipeline
+        result_text = execute_tool(intent_data)
+
+    # Step 3: Save to memory
+    add_to_memory({
+        "text": text,
+        "intent": intent,
+        "result": result_text
     })
+
+    # Step 4: Return structured response
     return {
-        "intent": intent_data.get("intent", "general_chat"),
-        "result": result_text,
+        "intent": intent,
+        "result": result_text
     }
 
 
@@ -806,5 +1168,11 @@ if __name__ == "__main__":
     # Only executed when you run  python app.py  directly.
     # A WSGI server (gunicorn, waitress) imports the module instead and
     # runs it differently — this block is skipped in production.
-    print("\n  Voice Agent running → http://localhost:8501\n")
+    try:
+        import flask.cli
+        flask.cli.show_server_banner = lambda *args, **kwargs: None
+    except Exception:
+        pass
+
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     app.run(debug=False, port=8501)
