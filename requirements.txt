@@ -11,7 +11,7 @@ python-dotenv==1.2.2
 requests==2.33.1
 numpy
 pydantic==2.13.1
-huggingface_hub==1.11.0 Loads GROQ_API_KEY from .env file automatically
+huggingface_hub==1.11.0 #Loads GROQ_API_KEY from .env file automatically
  
 # ffmpeg must also be installed on your OS (not via pip):
 #   Mac   → brew install ffmpeg
