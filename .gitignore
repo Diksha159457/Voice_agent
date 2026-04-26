@@ -1,20 +1,18 @@
-venv/
-__pycache__/
+# Environment variables — NEVER push your API keys
 .env
-output/
-# Python
-*.py[cod]
+
+# Python cache files — not needed on GitHub
+__pycache__/
+*.pyc
 *.pyo
 
+# Virtual environment folder
+venv/
+env/
 
-# Secrets — never commit your real key
-.env
-
-
-
-# macOS
+# OS files
 .DS_Store
+Thumbs.db
 
-# IDEs
-.vscode/
-.idea/
+# Output folder
+output/

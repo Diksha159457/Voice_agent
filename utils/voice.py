@@ -1,8 +1,17 @@
-import sounddevice as sd              # For recording audio
-import scipy.io.wavfile as wav        # To save audio file
-import pyttsx3                        # Text-to-speech (offline)
-from faster_whisper import WhisperModel  # Speech-to-text
+# import sounddevice as sd  ← REMOVE THIS
+import whisper
+import tempfile
+import os
 
+model = whisper.load_model("base")
+
+def speech_to_text(audio_file_path):
+    result = model.transcribe(audio_file_path)
+    return result["text"]
+
+def speak(text):
+    # TTS not supported on cloud — just return text
+    return text
 _model = None
 
 
@@ -10,7 +19,7 @@ def get_model(model_size="base"):
     """Load the Whisper model only when voice transcription is used."""
     global _model
     if _model is None:
-        _model = WhisperModel(model_size)
+        _model = whisper.load_model(model_size)
     return _model
 
 
