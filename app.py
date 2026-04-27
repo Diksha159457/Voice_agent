@@ -504,73 +504,183 @@ function refreshSendBtn() {
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MIC RECORDING — toggle start/stop with one button
+// Fixed for: HTTP localhost, browser compatibility, permission errors
 // ═════════════════════════════════════════════════════════════════════════════
 async function toggleRecording() {
-  if (busy) return;  // don't start recording during a request
+  if (busy) return;  // don't start recording during a server request
 
   // ── Stop if already recording ────────────────────────────────────────────
   if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();        // triggers onstop below
+    mediaRecorder.stop();   // triggers the onstop handler below
     setStatus('Finishing recording…');
     return;
   }
 
-  // ── Start a new recording ────────────────────────────────────────────────
+  // ── CHECK 1: Browser support ──────────────────────────────────────────────
+  // Some older browsers or non-secure contexts don't support MediaDevices API
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus('❌ Your browser does not support mic recording. Use Chrome or Firefox.');
+    alert(
+      'Microphone recording is not available.\n\n' +
+      'Reasons this can happen:\n' +
+      '1. You are on HTTP (not HTTPS) — use https:// or localhost\n' +
+      '2. Your browser is too old — use Chrome 74+ or Firefox 76+\n' +
+      '3. Mic recording is blocked in your browser settings\n\n' +
+      'Fix: Open chrome://flags and enable "Insecure origins treated as secure"\n' +
+      'OR use the Upload Audio button instead.'
+    );
+    return;
+  }
+
+  // ── CHECK 2: HTTPS / localhost requirement ────────────────────────────────
+  // navigator.mediaDevices.getUserMedia ONLY works on:
+  //   - https:// (any domain)
+  //   - http://localhost  (special exception for local dev)
+  //   - http://127.0.0.1 (special exception for local dev)
+  // It will silently fail or throw on plain http:// on a real domain.
+  const isSecure = (
+    location.protocol === 'https:' ||          // HTTPS — always allowed
+    location.hostname === 'localhost' ||        // localhost — allowed
+    location.hostname === '127.0.0.1'          // loopback IP — allowed
+  );
+
+  if (!isSecure) {
+    setStatus('❌ Mic requires HTTPS. Use the Upload Audio button instead.');
+    alert(
+      'Microphone recording requires HTTPS.\n\n' +
+      'You are on: ' + location.origin + '\n\n' +
+      'Solutions:\n' +
+      '1. On Render: your app URL starts with https:// — recording will work there\n' +
+      '2. Locally: use http://localhost:8501 (not your machine IP)\n' +
+      '3. Use the "Upload Audio" button to upload a pre-recorded file instead'
+    );
+    return;
+  }
+
+  // ── CHECK 3: Pick a supported MIME type ──────────────────────────────────
+  // Different browsers support different audio formats for MediaRecorder.
+  // We try common ones in order and use the first one that works.
+  const mimeTypes = [
+    'audio/webm;codecs=opus',   // Chrome, Edge — best quality
+    'audio/webm',               // Chrome, Edge — fallback
+    'audio/ogg;codecs=opus',    // Firefox
+    'audio/ogg',                // Firefox fallback
+    'audio/mp4',                // Safari (iOS/macOS)
+    '',                         // empty string = browser default (last resort)
+  ];
+  const supportedMime = mimeTypes.find(m => m === '' || MediaRecorder.isTypeSupported(m));
+  // MediaRecorder.isTypeSupported() returns true if the browser can record in that format
+
+  // ── START RECORDING ───────────────────────────────────────────────────────
   try {
-    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    // getUserMedia asks the browser for microphone permission
+    // Ask the browser for microphone access
+    // This shows the browser's permission popup the first time
+    recordingStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,   // reduces echo from speakers
+        noiseSuppression: true,   // filters background noise
+        sampleRate: 16000,        // 16kHz is optimal for Whisper transcription
+      }
+    });
 
-    mediaRecorder  = new MediaRecorder(recordingStream);  // recorder attached to mic stream
-    recordedChunks = [];  // clear previous chunks
+    // Create the MediaRecorder with the best supported format
+    const options = supportedMime ? { mimeType: supportedMime } : {};
+    mediaRecorder  = new MediaRecorder(recordingStream, options);
+    recordedChunks = [];  // clear any leftover chunks from a previous recording
 
-    // Collect audio chunks as they arrive
+    // Called repeatedly during recording with chunks of audio data
     mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+      if (e.data && e.data.size > 0) {
+        recordedChunks.push(e.data);  // accumulate chunks
+      }
     };
 
-    // When recording stops: assemble the final audio blob
+    // Called once when mediaRecorder.stop() completes
     mediaRecorder.onstop = () => {
-      recordedBlob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      // Merge all chunks into a single Blob
+      const mimeType = mediaRecorder.mimeType || supportedMime || 'audio/webm';
+      recordedBlob   = new Blob(recordedChunks, { type: mimeType });
 
-      // Release the microphone — stops the browser's recording indicator
+      // Determine file extension from MIME type for the filename chip
+      const ext = mimeType.includes('ogg') ? '.ogg'
+                : mimeType.includes('mp4') ? '.mp4'
+                : '.webm';
+
+      // Release the microphone — browser stops showing the recording indicator
       if (recordingStream) {
         recordingStream.getTracks().forEach(t => t.stop());
         recordingStream = null;
       }
 
-      // Load recording into the preview player so user can LISTEN before sending
+      // Load into preview player so user can listen before sending
       setAudioPreview(recordedBlob);
 
-      // Update UI
-      recordBtn.classList.remove('recording');  // remove red style
-      recordLabel.textContent  = 'Re-record';  // offer to re-record
-      audioChip.textContent    = 'mic_recording.webm';
+      // Update UI back to idle state
+      recordBtn.classList.remove('recording');
+      recordLabel.textContent  = 'Re-record';         // offer to re-record
+      audioChip.textContent    = 'recording' + ext;   // show filename chip
       audioChip.style.display  = 'inline';
-      recIndicator.classList.remove('active'); // hide topbar "Recording…" pill
-      setStatus('✅ Recording ready — listen above, then press Send.');
+      recIndicator.classList.remove('active');         // hide topbar pill
+      setStatus('✅ Recording ready — press ▶ above to listen, then Send.');
       refreshSendBtn();
     };
 
-    mediaRecorder.start();  // begin capturing from mic
+    // Request data every 250ms so we get chunks regularly
+    // (without this, some browsers only fire ondataavailable once at the end)
+    mediaRecorder.start(250);
 
-    // Clear any previously selected audio file — only one source at a time
-    audioFileInput.value = '';
-    recordedBlob = null;
+    // Clear any previously selected audio file — only one audio source at a time
+    audioFileInput.value    = '';
+    recordedBlob            = null;
     audioChip.style.display = 'none';
+    audioChip.textContent   = '';
     document.getElementById('audioUploadBtn').classList.remove('has-file');
 
-    // Update button to "Stop" state (red)
+    // Hide the old preview player while new recording is in progress
+    audioPreview.pause();
+    audioPreview.removeAttribute('src');
+    audioPreview.style.display = 'none';
+
+    // Switch button to red "Stop" state
     recordBtn.classList.add('recording');
     recordLabel.textContent = '⏹ Stop';
     recIndicator.classList.add('active');  // show topbar "Recording…" pill
-    setStatus('🔴 Recording… click Stop when done.');
+    setStatus('🔴 Recording… speak now, then click ⏹ Stop when done.');
     refreshSendBtn();
 
   } catch (err) {
-    // Mic permission denied or hardware unavailable
+    // Handle specific known errors with helpful messages
     recordBtn.classList.remove('recording');
     recordLabel.textContent = 'Record';
-    setStatus('❌ Mic access failed: ' + err.message);
+    recIndicator.classList.remove('active');
+
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      // User clicked "Block" on the permission popup, or it was blocked in settings
+      setStatus('❌ Mic blocked. Click the 🔒 icon in your browser address bar to allow.');
+      alert(
+        'Microphone access was blocked.\n\n' +
+        'To fix:\n' +
+        '1. Click the 🔒 or 🎙 icon in your browser address bar\n' +
+        '2. Set Microphone to "Allow"\n' +
+        '3. Refresh the page and try again\n\n' +
+        'OR use the "Upload Audio" button to upload a pre-recorded file.'
+      );
+    } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+      // No microphone hardware detected
+      setStatus('❌ No microphone found. Plug one in or use Upload Audio instead.');
+    } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      // Mic is being used by another app (Zoom, Teams, etc.)
+      setStatus('❌ Mic is in use by another app. Close it and try again.');
+    } else {
+      // Unknown error — show the raw message for debugging
+      setStatus('❌ Recording failed: ' + err.name + ' — ' + err.message);
+    }
+
+    // Release stream if we managed to get it before the error
+    if (recordingStream) {
+      recordingStream.getTracks().forEach(t => t.stop());
+      recordingStream = null;
+    }
   }
 }
 
