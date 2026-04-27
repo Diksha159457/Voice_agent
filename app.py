@@ -519,41 +519,21 @@ async function toggleRecording() {
   // ── CHECK 1: Browser support ──────────────────────────────────────────────
   // Some older browsers or non-secure contexts don't support MediaDevices API
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('❌ Your browser does not support mic recording. Use Chrome or Firefox.');
-    alert(
-      'Microphone recording is not available.\n\n' +
-      'Reasons this can happen:\n' +
-      '1. You are on HTTP (not HTTPS) — use https:// or localhost\n' +
-      '2. Your browser is too old — use Chrome 74+ or Firefox 76+\n' +
-      '3. Mic recording is blocked in your browser settings\n\n' +
-      'Fix: Open chrome://flags and enable "Insecure origins treated as secure"\n' +
-      'OR use the Upload Audio button instead.'
-    );
+    setStatus('Your browser does not support mic recording. Use Chrome or Firefox.');
+    alert('Mic recording not available. Use Chrome/Firefox on https:// or localhost. Or use Upload Audio button.');
     return;
   }
 
   // ── CHECK 2: HTTPS / localhost requirement ────────────────────────────────
-  // navigator.mediaDevices.getUserMedia ONLY works on:
-  //   - https:// (any domain)
-  //   - http://localhost  (special exception for local dev)
-  //   - http://127.0.0.1 (special exception for local dev)
-  // It will silently fail or throw on plain http:// on a real domain.
   const isSecure = (
-    location.protocol === 'https:' ||          // HTTPS — always allowed
-    location.hostname === 'localhost' ||        // localhost — allowed
-    location.hostname === '127.0.0.1'          // loopback IP — allowed
+    location.protocol === 'https:' ||
+    location.hostname === 'localhost' ||
+    location.hostname === '127.0.0.1'
   );
 
   if (!isSecure) {
-    setStatus('❌ Mic requires HTTPS. Use the Upload Audio button instead.');
-    alert(
-      'Microphone recording requires HTTPS.\n\n' +
-      'You are on: ' + location.origin + '\n\n' +
-      'Solutions:\n' +
-      '1. On Render: your app URL starts with https:// — recording will work there\n' +
-      '2. Locally: use http://localhost:8501 (not your machine IP)\n' +
-      '3. Use the "Upload Audio" button to upload a pre-recorded file instead'
-    );
+    setStatus('Mic requires HTTPS. Use Upload Audio instead, or open the app on https://');
+    alert('Mic blocked: not on HTTPS. Open the app at https:// (Render URL) or http://localhost:8501. Or use Upload Audio.');
     return;
   }
 
@@ -655,16 +635,8 @@ async function toggleRecording() {
     recIndicator.classList.remove('active');
 
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      // User clicked "Block" on the permission popup, or it was blocked in settings
-      setStatus('❌ Mic blocked. Click the 🔒 icon in your browser address bar to allow.');
-      alert(
-        'Microphone access was blocked.\n\n' +
-        'To fix:\n' +
-        '1. Click the 🔒 or 🎙 icon in your browser address bar\n' +
-        '2. Set Microphone to "Allow"\n' +
-        '3. Refresh the page and try again\n\n' +
-        'OR use the "Upload Audio" button to upload a pre-recorded file.'
-      );
+      setStatus('Mic blocked. Click the lock icon in address bar, set Mic to Allow, then refresh.');
+      alert('Mic blocked. Fix: click the lock icon in your address bar, set Microphone to Allow, refresh the page.');
     } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
       // No microphone hardware detected
       setStatus('❌ No microphone found. Plug one in or use Upload Audio instead.');
@@ -805,7 +777,7 @@ async function handleSend() {
 // SEND AUDIO — POST multipart/form-data to /run_audio
 // ═════════════════════════════════════════════════════════════════════════════
 async function sendAudio(file, extraText) {
-  appendMessage('user', extraText ? `🎵 ${file.name}\n${extraText}` : `🎵 ${file.name}`);
+  appendMessage('user', extraText ? '🎵 ' + file.name + '\n' + extraText : '🎵 ' + file.name);
   showTyping();
   setStatus('Transcribing audio with Whisper…');
   setBusy(true);
@@ -832,7 +804,7 @@ async function sendAudio(file, extraText) {
 // SEND DOCUMENT — POST multipart/form-data to /run_file
 // ═════════════════════════════════════════════════════════════════════════════
 async function sendDoc(file, extraText) {
-  appendMessage('user', extraText ? `📎 ${file.name}\n${extraText}` : `📎 ${file.name}`);
+  appendMessage('user', extraText ? '📎 ' + file.name + '\n' + extraText : '📎 ' + file.name);
   showTyping();
   setStatus('Reading file…');
   setBusy(true);
@@ -860,7 +832,7 @@ async function sendDoc(file, extraText) {
 // ═════════════════════════════════════════════════════════════════════════════
 async function sendFolder(files, extraText) {
   const folderName = files[0].webkitRelativePath.split('/')[0];
-  appendMessage('user', `📂 ${folderName}/ (${files.length} files)${extraText ? '\n' + extraText : ''}`);
+  appendMessage('user', '📂 ' + folderName + '/ (' + files.length + ' files)' + (extraText ? '\n' + extraText : ''));
   showTyping();
   setStatus('Reading folder files…');
   setBusy(true);
@@ -879,16 +851,16 @@ async function sendFolder(files, extraText) {
 
   // Read each text file and combine into one big prompt
   let combined = extraText ? extraText + '\n\n' : '';
-  combined += `Folder: ${folderName}/\n`;
+  combined += 'Folder: ' + folderName + '/\n';   // no backticks — string concat instead
 
   for (const file of readable.slice(0, 10)) {  // limit to 10 files to avoid huge payloads
     const content = await readFileAsText(file);
-    combined += `\n--- ${file.webkitRelativePath} ---\n${content.slice(0, 2000)}\n`;
+    combined += '\n--- ' + file.webkitRelativePath + ' ---\n' + content.slice(0, 2000) + '\n';
     // Each file capped at 2000 chars to stay within LLM context budget
   }
 
   if (readable.length > 10) {
-    combined += `\n[${readable.length - 10} more files not shown — only first 10 included]`;
+    combined += '\n[' + (readable.length - 10) + ' more files not shown — only first 10 included]';
   }
 
   try {
@@ -971,15 +943,15 @@ function appendMessage(role, text, intent) {
   const wrap = document.createElement('div');
   wrap.className = 'message ' + role;
 
-  const pill = intent ? `<span class="intent-tag">${escHtml(intent)}</span>` : '';
+  const pill = intent ? '<span class="intent-tag">' + escHtml(intent) + '</span>' : '';
   const now  = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  wrap.innerHTML = `
-    <div class="msg-avatar ${role}">${role === 'agent' ? 'VA' : 'U'}</div>
-    <div class="msg-content">
-      <div class="msg-bubble">${escHtml(text)}</div>
-      <div class="msg-meta">${now} ${pill}</div>
-    </div>`;
+  wrap.innerHTML =
+    '<div class="msg-avatar ' + role + '">' + (role === 'agent' ? 'VA' : 'U') + '</div>' +
+    '<div class="msg-content">' +
+      '<div class="msg-bubble">' + escHtml(text) + '</div>' +
+      '<div class="msg-meta">' + now + ' ' + pill + '</div>' +
+    '</div>';
 
   msgList.appendChild(wrap);
   document.getElementById('messagesArea').scrollTop = 99999;  // scroll to newest
@@ -992,13 +964,13 @@ function showTyping() {
   const wrap = document.createElement('div');
   wrap.className = 'message agent';
   wrap.id = 'typingMsg';
-  wrap.innerHTML = `
-    <div class="msg-avatar agent">VA</div>
-    <div class="msg-content">
-      <div class="msg-bubble" style="padding:14px 16px">
-        <div class="typing-dots"><span></span><span></span><span></span></div>
-      </div>
-    </div>`;
+  wrap.innerHTML =
+    '<div class="msg-avatar agent">VA</div>' +
+    '<div class="msg-content">' +
+      '<div class="msg-bubble" style="padding:14px 16px">' +
+        '<div class="typing-dots"><span></span><span></span><span></span></div>' +
+      '</div>' +
+    '</div>';
   msgList.appendChild(wrap);
   document.getElementById('messagesArea').scrollTop = 99999;
 }
@@ -1027,10 +999,10 @@ async function loadHistory() {
       const time = item.timestamp
         ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         : '';
-      div.innerHTML = `
-        <div class="hi-time">${time}</div>
-        <div class="hi-intent">${escHtml(item.intent || 'general_chat')}</div>
-        <div class="hi-text" title="${escHtml(item.text)}">${escHtml(item.text)}</div>`;
+      div.innerHTML =
+        '<div class="hi-time">'   + time + '</div>' +
+        '<div class="hi-intent">' + escHtml(item.intent || 'general_chat') + '</div>' +
+        '<div class="hi-text" title="' + escHtml(item.text) + '">' + escHtml(item.text) + '</div>';
       histList.appendChild(div);
     });
   } catch (_) {}  // silently fail — history is non-critical
