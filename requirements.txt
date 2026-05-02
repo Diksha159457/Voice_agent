@@ -13,7 +13,7 @@ pypdf==6.5.0
 numpy
 pydantic==2.13.1
 huggingface_hub==1.11.0 #Loads GROQ_API_KEY from .env file automatically
-
+groq-whisper==1.0.0
 # ffmpeg must also be installed on your OS (not via pip):
 #   Mac   → brew install ffmpeg
 #   Linux → sudo apt install ffmpeg
