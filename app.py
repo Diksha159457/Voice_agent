@@ -286,7 +286,7 @@ HTML = """
     }
     .send-btn:hover  { background: var(--accent-hover); }
     .send-btn:active { transform: scale(.94); }
-    .send-btn:disabled { background: #3a3a3a; cursor: not-allowed; opacity: .5; }
+    .send-btn.is-disabled { background: #3a3a3a; cursor: default; opacity: .5; }
 
     .status-bar { font-size: 12px; color: var(--text-hint); margin-top: 8px; text-align: center; min-height: 16px; }
 
@@ -433,7 +433,7 @@ HTML = """
             </div>
 
             <!-- Circular send button -->
-            <button class="send-btn" id="sendBtn" onclick="handleSend()" disabled title="Send (Enter)">
+            <button class="send-btn is-disabled" id="sendBtn" onclick="handleSend()" title="Send (Enter)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="#1a1a1a">
                 <path d="M2 21l21-9L2 3v7l15 2-15 2z"/>
               </svg>
@@ -499,7 +499,28 @@ function refreshSendBtn() {
   const hasAudio  = audioFileInput.files.length > 0 || recordedBlob !== null;
   const hasDoc    = selectedDocFile !== null;
   const hasFolder = folderFiles.length > 0;
-  sendBtn.disabled = busy || (!hasText && !hasAudio && !hasDoc && !hasFolder);
+  const canSend = !busy && (hasText || hasAudio || hasDoc || hasFolder);
+  sendBtn.disabled = busy;
+  sendBtn.classList.toggle('is-disabled', !canSend);
+  sendBtn.setAttribute('aria-disabled', String(!canSend));
+}
+
+// Wire input state in one place so typing, paste, browser autofill, and tests
+// all keep the Send button in sync.
+function initInputListeners() {
+  ['input', 'keyup', 'paste', 'change'].forEach(eventName => {
+    textInput.addEventListener(eventName, () => {
+      autoResize(textInput);
+      refreshSendBtn();
+    });
+  });
+
+  [audioFileInput, docFileInput, folderInput].forEach(input => {
+    input.addEventListener('change', refreshSendBtn);
+  });
+
+  window.addEventListener('pageshow', refreshSendBtn);
+  refreshSendBtn();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -733,7 +754,7 @@ function setAudioPreview(source) {
 function handleKey(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();                      // prevent real newline
-    if (!sendBtn.disabled) handleSend();
+    handleSend();
   }
 }
 
@@ -777,7 +798,7 @@ async function handleSend() {
 // SEND AUDIO — POST multipart/form-data to /run_audio
 // ═════════════════════════════════════════════════════════════════════════════
 async function sendAudio(file, extraText) {
-  appendMessage('user', extraText ? '🎵 ' + file.name + '\n' + extraText : '🎵 ' + file.name);
+  appendMessage('user', extraText ? '🎵 ' + file.name + '\\n' + extraText : '🎵 ' + file.name);
   showTyping();
   setStatus('Transcribing audio with Whisper…');
   setBusy(true);
@@ -804,7 +825,7 @@ async function sendAudio(file, extraText) {
 // SEND DOCUMENT — POST multipart/form-data to /run_file
 // ═════════════════════════════════════════════════════════════════════════════
 async function sendDoc(file, extraText) {
-  appendMessage('user', extraText ? '📎 ' + file.name + '\n' + extraText : '📎 ' + file.name);
+  appendMessage('user', extraText ? '📎 ' + file.name + '\\n' + extraText : '📎 ' + file.name);
   showTyping();
   setStatus('Reading file…');
   setBusy(true);
@@ -832,7 +853,7 @@ async function sendDoc(file, extraText) {
 // ═════════════════════════════════════════════════════════════════════════════
 async function sendFolder(files, extraText) {
   const folderName = files[0].webkitRelativePath.split('/')[0];
-  appendMessage('user', '📂 ' + folderName + '/ (' + files.length + ' files)' + (extraText ? '\n' + extraText : ''));
+  appendMessage('user', '📂 ' + folderName + '/ (' + files.length + ' files)' + (extraText ? '\\n' + extraText : ''));
   showTyping();
   setStatus('Reading folder files…');
   setBusy(true);
@@ -850,17 +871,17 @@ async function sendFolder(files, extraText) {
   }
 
   // Read each text file and combine into one big prompt
-  let combined = extraText ? extraText + '\n\n' : '';
-  combined += 'Folder: ' + folderName + '/\n';   // no backticks — string concat instead
+  let combined = extraText ? extraText + '\\n\\n' : '';
+  combined += 'Folder: ' + folderName + '/\\n';   // no backticks — string concat instead
 
   for (const file of readable.slice(0, 10)) {  // limit to 10 files to avoid huge payloads
     const content = await readFileAsText(file);
-    combined += '\n--- ' + file.webkitRelativePath + ' ---\n' + content.slice(0, 2000) + '\n';
+    combined += '\\n--- ' + file.webkitRelativePath + ' ---\\n' + content.slice(0, 2000) + '\\n';
     // Each file capped at 2000 chars to stay within LLM context budget
   }
 
   if (readable.length > 10) {
-    combined += '\n[' + (readable.length - 10) + ' more files not shown — only first 10 included]';
+    combined += '\\n[' + (readable.length - 10) + ' more files not shown — only first 10 included]';
   }
 
   try {
@@ -1100,6 +1121,7 @@ function escHtml(str) {
 }
 
 // Load sidebar history on first page open
+initInputListeners();
 loadHistory();
 </script>
 </body>
