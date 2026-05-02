@@ -1116,6 +1116,12 @@ def index():
     return render_template_string(HTML)
 
 
+@app.route("/health")
+def health():
+    """Simple health check for deployment platforms."""
+    return jsonify({"status": "ok"})
+
+
 @app.route("/run_audio", methods=["POST"])
 def run_audio():
     """

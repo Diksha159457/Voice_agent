@@ -5,7 +5,7 @@
 import os       # path operations and directory creation
 
 from config import MODEL_NAME
-from utils.client import _get_client
+from utils.client import _get_client, has_api_key
 
 OUTPUT_DIR = "output"
 # All files the agent creates go here.
@@ -52,6 +52,9 @@ def create_file(intent_data: dict) -> str:
 # ── Tool: generate code with the LLM and save it ─────────────────────────────
 def write_code(intent_data: dict) -> str:
     """Ask Groq LLaMA3 to write code and save it to output/<target>."""
+    if not has_api_key():
+        return "Groq API key is missing. Add GROQ_API_KEY to your environment to generate code."
+
     _ensure_output_dir()
 
     target  = intent_data.get("target", "output.py")   # filename to save to
@@ -83,6 +86,9 @@ def write_code(intent_data: dict) -> str:
 # ── Tool: summarize text ──────────────────────────────────────────────────────
 def summarize(intent_data: dict) -> str:
     """Summarize the text in intent_data['details'] into 2-4 sentences."""
+    if not has_api_key():
+        return "Groq API key is missing. Add GROQ_API_KEY to your environment to summarize text."
+
     details = intent_data.get("details", "")
 
     if not details:
@@ -104,6 +110,9 @@ def summarize(intent_data: dict) -> str:
 # ── Tool: general conversational reply ───────────────────────────────────────
 def general_chat(intent_data: dict) -> str:
     """Answer any question that doesn't fit a specific tool."""
+    if not has_api_key():
+        return "Groq API key is missing. Add GROQ_API_KEY to your environment or .env file."
+
     details = intent_data.get("details", "")
     target  = intent_data.get("target", "")
     question = details or target or "Hello"   # reconstruct the original question

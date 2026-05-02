@@ -17,3 +17,8 @@ def _get_client() -> Groq:
             )
         _client = Groq(api_key=api_key)
     return _client
+
+
+def has_api_key() -> bool:
+    """Return True when Groq-backed chat features can run."""
+    return bool(os.environ.get("GROQ_API_KEY"))
