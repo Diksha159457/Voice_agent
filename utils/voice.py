@@ -1,7 +1,7 @@
 """Compatibility helpers for older imports.
 
 Browser recording is handled in ``app.py`` and transcription is implemented by
-``utils.stt`` with faster-whisper. This module intentionally avoids desktop
+``utils.stt`` (Groq-hosted Whisper). This module intentionally avoids desktop
 audio packages so cloud deployment does not fail at import time.
 """
 

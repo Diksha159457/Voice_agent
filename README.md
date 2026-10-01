@@ -1,7 +1,8 @@
 # 🎙️ Voice Agent
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Render-46E3B7?style=flat&logo=render)](https://voice-agent-8085.onrender.com)
-[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
+[![CI](https://github.com/Diksha159457/Voice_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Diksha159457/Voice_agent/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue?logo=python&logoColor=white)](https://python.org)
 [![Flask](https://img.shields.io/badge/Flask-3.0-black?logo=flask)](https://flask.palletsprojects.com)
 [![Groq](https://img.shields.io/badge/Groq-LLaMA3-orange?logo=groq)](https://groq.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -14,8 +15,9 @@ A voice-controlled AI agent that transcribes speech, detects intent, and execute
 
 ## Demo
 
-<!-- Replace with your actual GIF: record with QuickTime → convert at ezgif.com -->
-![Voice Agent Demo](assets/demo.gif)
+<!-- TODO: add assets/demo.gif (record with QuickTime → convert at ezgif.com) and uncomment:
+![Voice Agent Demo](assets/demo.gif) -->
+> 🎥 Try it live: **[voice-agent-8085.onrender.com](https://voice-agent-8085.onrender.com)**
 
 ---
 
@@ -62,7 +64,7 @@ Audio / Text input
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.12, Flask, Gunicorn |
+| Backend | Python 3.11+, Flask, Gunicorn |
 | STT | Groq Whisper API (`whisper-large-v3`) |
 | LLM | Groq LLaMA3 |
 | Frontend | Vanilla HTML / CSS / JS (dark UI) |
@@ -73,18 +75,49 @@ Audio / Text input
 ## Project structure
 
 ```
-voice_agent/
-├── app.py              # Flask server + all HTTP routes
-├── requirements.txt    # Python dependencies
-│
+Voice_agent/
+├── app.py                # Flask routes + shared text pipeline
+├── templates/index.html  # Browser UI (vanilla HTML/CSS/JS)
+├── config.py             # Model name
 ├── utils/
-│   ├── stt.py          # Speech-to-text via Groq Whisper API
-│   ├── intent.py       # Intent detection via LLaMA3
-│   ├── tools.py        # Tool executor (file ops, code gen, chat)
-│   └── memory.py       # Session history
-│
-└── output/             # All generated files go here (auto-created)
+│   ├── stt.py            # Speech-to-text via Groq Whisper (lazy client)
+│   ├── intent.py         # Rule-based intent first, LLM fallback
+│   ├── tools.py          # Tool executor (file ops, code gen, chat)
+│   ├── sandbox.py        # Filesystem sandbox for agent-written files
+│   ├── documents.py      # PDF / DOCX / text extraction (zip-bomb safe)
+│   ├── history.py        # Atomic, locked JSON chat history
+│   └── memory.py         # In-process session history
+├── tests/                # 55 offline tests (fake Groq client)
+└── output/               # All generated files go here (auto-created)
 ```
+
+---
+
+## Safety: the agent can only write inside `output/`
+
+File names come from speech or an LLM, so they're treated as hostile. `utils/sandbox.py` accepts a name only if it is a single path component made of safe characters, isn't `.`, `..` or hidden, is at most 100 characters, and still resolves inside `output/` after symlinks are followed. Anything else is rejected with a message rather than silently "fixed".
+
+The test suite tries `../escape.txt`, absolute paths, Windows separators, null bytes, shell metacharacters, over-long names, non-string LLM output and a symlink pointing outside the sandbox.
+
+Other hardening:
+
+- The app **boots and serves typed commands without an API key**. Before, importing `utils/stt.py` created a Groq client at import time and crashed the whole app.
+- Uploads: 25 MB default cap (`MAX_UPLOAD_MB`), audio format allow-list, binary-file detection, DOCX parsed in memory with an uncompressed-size cap.
+- Input validation on `/run_text` (type and size); provider errors map to `502`, a missing key to `503`, unsupported types to `415`.
+- Generated code has stray Markdown fences stripped before it's saved.
+- Chat history is written atomically under a lock, so it can't be corrupted by a crash or concurrent requests.
+
+---
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest --cov=.        # 55 tests, no API key or network needed
+ruff check .
+```
+
+CI runs lint and tests on Python 3.11 and 3.12, then boots the app under Gunicorn **without** an API key and checks that `/health` and the UI respond.
 
 ---
 
@@ -133,8 +166,8 @@ Render auto-deploys on every push to `main`.
 
 ## Limitations
 
-- Session memory resets on server restart (no persistent storage)
-- Audio uploads are limited to 50 MB
+- Chat history is a JSON file: fine for a single-instance demo, not for multiple users
+- Uploads are limited to 25 MB by default (`MAX_UPLOAD_MB`)
 - Single Gunicorn worker — not designed for high concurrency
 - Generated files are ephemeral on Render's free tier
 
@@ -146,7 +179,7 @@ Render auto-deploys on every push to `main`.
 - [ ] User authentication
 - [ ] Support for more intents (web search, calendar, email)
 - [ ] Streaming LLM responses
-- [ ] Unit tests for intent detection and tool execution
+- [x] Unit tests for intent detection and tool execution
 
 ---
 

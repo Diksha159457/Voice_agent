@@ -2,7 +2,6 @@ import os
 
 from groq import Groq
 
-
 _client = None
 
 
