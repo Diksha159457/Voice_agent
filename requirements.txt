@@ -1,14 +1,7 @@
-# requirements.txt — Lightweight Voice Agent dependencies
-# Install: pip install -r requirements.txt
-#
-# Total download: ~300 MB  (vs 6 GB+ with PyTorch + Ollama)
- 
-flask==3.1.3
-gunicorn
-groq==1.1.2
-python-dotenv==1.2.2 
-groq
-# ffmpeg must also be installed on your OS (not via pip):
-#   Mac   → brew install ffmpeg
-#   Linux → sudo apt install ffmpeg
-#   Win   → winget install ffmpeg   OR   choco install ffmpeg
+# Runtime dependencies. Speech-to-text and LLM calls go to the Groq API,
+# so no PyTorch / local models / ffmpeg are needed.
+flask>=3.0,<4
+gunicorn>=22.0
+groq>=0.11
+python-dotenv>=1.0
+pypdf>=4.0          # PDF uploads

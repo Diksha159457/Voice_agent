@@ -2,51 +2,45 @@
 # Reads the intent dict from intent.py and performs the correct action.
 # All generated files go into output/ — the agent can never write outside it.
 
-import os       # path operations and directory creation
+import os
+import re
 
 from config import MODEL_NAME
 from utils.client import _get_client, has_api_key
+from utils.sandbox import SandboxError, safe_path
 
-OUTPUT_DIR = "output"
-# All files the agent creates go here.
-# One safe folder = easy cleanup, no risk of overwriting system files.
+OUTPUT_DIR = os.environ.get("AGENT_OUTPUT_DIR", "output")
+# All files the agent creates go here — see utils/sandbox.py for the rules.
 
-# ── Helper: create output/ if it doesn't exist ───────────────────────────────
-def _ensure_output_dir() -> None:
-    """Create output/ directory. exist_ok=True = no error if already there."""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+_FENCE = re.compile(r"^```[\w+-]*\s*\n(.*?)\n?```\s*$", re.DOTALL)
 
 
-# ── Helper: build a safe path inside output/ ─────────────────────────────────
-def _safe_path(filename: str) -> str:
-    """
-    Strips directory components from filename to block path-traversal attacks.
-    e.g. '../../etc/passwd' → 'output/passwd'  (harmless)
-    """
-    safe_name = os.path.basename(filename) if filename else "output_file"
-    return os.path.join(OUTPUT_DIR, safe_name)
+def strip_code_fences(text: str) -> str:
+    """Models often wrap code in ``` fences despite instructions; remove them."""
+    match = _FENCE.match(text.strip())
+    return match.group(1) if match else text.strip()
 
 
 # ── Tool: create an empty file or directory ───────────────────────────────────
 def create_file(intent_data: dict) -> str:
     """Create a blank file or folder inside output/."""
-    _ensure_output_dir()
-
     target  = intent_data.get("target", "")    # e.g. "my_project" or "notes.txt"
-    details = intent_data.get("details", "")   # e.g. "directory"
+    details = str(intent_data.get("details", ""))   # e.g. "directory"
 
-    if not target:
-        return "Please specify a file or folder name."
-
-    path = _safe_path(target)
+    try:
+        path = safe_path(OUTPUT_DIR, target)
+    except SandboxError as e:
+        return f"⚠️ {e}"
+    if path.exists() and path.is_dir() != ("dir" in details.lower() or "folder" in details.lower()):
+        return f"⚠️ '{path.name}' already exists as a different type."
 
     if "dir" in details.lower() or "folder" in details.lower():
-        os.makedirs(path, exist_ok=True)   # create directory (and any parents)
-        return f"✅ Created folder: {path}"
+        path.mkdir(exist_ok=True)
+        return f"✅ Created folder: {OUTPUT_DIR}/{path.name}"
     else:
         with open(path, "a"):              # 'a' mode: creates if absent, no-op if present
             pass
-        return f"✅ Created file: {path}"
+        return f"✅ Created file: {OUTPUT_DIR}/{path.name}"
 
 
 # ── Tool: generate code with the LLM and save it ─────────────────────────────
@@ -55,10 +49,15 @@ def write_code(intent_data: dict) -> str:
     if not has_api_key():
         return "Groq API key is missing. Add GROQ_API_KEY to your environment to generate code."
 
-    _ensure_output_dir()
-
-    target  = intent_data.get("target", "output.py")   # filename to save to
+    target  = intent_data.get("target") or "output.py"   # filename to save to
     details = intent_data.get("details", "")            # what the code should do
+
+    try:
+        path = safe_path(OUTPUT_DIR, target)
+    except SandboxError as e:
+        return f"⚠️ {e}"
+    if path.is_dir():
+        return f"⚠️ '{path.name}' is a folder; choose a file name."
 
     prompt = (
         f"Write complete, working code for a file named '{target}'. "
@@ -73,14 +72,13 @@ def write_code(intent_data: dict) -> str:
         max_tokens=1000,   # enough for a reasonably-sized source file
     )
 
-    code = response.choices[0].message.content.strip()   # raw generated code
+    code = strip_code_fences(response.choices[0].message.content or "")
 
-    path = _safe_path(target)
     with open(path, "w", encoding="utf-8") as f:
         f.write(code)   # save to disk
 
     preview = "\n".join(code.splitlines()[:3])   # first 3 lines for the bubble preview
-    return f"✅ Wrote code to {path}:\n\n{preview}\n..."
+    return f"✅ Wrote code to {OUTPUT_DIR}/{path.name}:\n\n{preview}\n..."
 
 
 # ── Tool: summarize text ──────────────────────────────────────────────────────
@@ -132,34 +130,6 @@ def general_chat(intent_data: dict) -> str:
 
     return response.choices[0].message.content.strip()
 
-def streaming_chat(text):
-    """
-    Streaming version of general chat (prints live in terminal)
-    """
-
-    client = _get_client()  # get Groq client
-
-    response = client.chat.completions.create(
-        model=MODEL_NAME,  # use updated model
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": text}
-        ],
-        stream=True  # 🔥 enables streaming
-    )
-
-    full_response = ""  # store final response
-
-    for chunk in response:
-        delta = chunk.choices[0].delta.content or ""  # extract token
-
-        print(delta, end="", flush=True)  # print live in terminal
-
-        full_response += delta  # build full response
-
-    print()  # newline after completion
-
-    return full_response.strip()  # return complete response
 # ── Dispatch table: intent string → tool function ─────────────────────────────
 TOOL_MAP = {
     "create_file":  create_file,    # "make a folder …" / "create a file …"

@@ -10,7 +10,6 @@ import re
 from config import MODEL_NAME
 from utils.client import _get_client
 
-
 SUPPORTED_INTENTS = {"create_file", "write_code", "summarize", "general_chat"}
 
 
